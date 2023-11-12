@@ -3,3 +3,5 @@ wave
 asyncio
 Flask
 gunicorn
+firebase-admin
+google-cloud-storage
