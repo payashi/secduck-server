@@ -17,6 +17,7 @@ from flask import Flask, request, jsonify
 from werkzeug.exceptions import BadRequest
 
 from .utils import marshal, is_today
+from .synthesize import get_audio
 from .storage import upload_audio, get_uri, synthesize_audio
 from .transcribe import transcribe
 
