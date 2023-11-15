@@ -7,3 +7,5 @@ REC_CONFIG = {
     "chunk": 1024,
     "sfmt": 16 // 8,
 }
+
+BUCKET_NAME = "duck-audio"

@@ -5,3 +5,6 @@ Flask
 gunicorn
 firebase-admin
 google-cloud-storage
+cloudevents
+google-cloud-speech
+google-cloud-texttospeech
