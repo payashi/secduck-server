@@ -31,10 +31,10 @@ def transcribe(gcs_uri: str) -> str:
     # them to get the transcripts for the entire audio file.
     for result in response.results:
         # The first alternative is the most likely one for this portion.
-        transcript_builder.append(f"{result.alternatives[0].transcript}\n")
+        transcript_builder.append(f"{result.alternatives[0].transcript}")
         # transcript_builder.append(f"\nConfidence: {result.alternatives[0].confidence}")
 
-    transcript = "".join(transcript_builder)
+    transcript = "\n".join(transcript_builder)
     logging.info("Speech Client: Transcript: %s", transcript)
 
     return transcript

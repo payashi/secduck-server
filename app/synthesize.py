@@ -1,7 +1,9 @@
 from google.cloud import texttospeech
 
+from .utils import marshal
 
-def get_audio(text, filename):
+
+def synthesize(text) -> str:
     """Synthesizes speech from the input string of text."""
 
     client = texttospeech.TextToSpeechClient()
@@ -24,6 +26,4 @@ def get_audio(text, filename):
     )
 
     # The response's audio_content is binary.
-    with open(filename, "wb") as out:
-        out.write(response.audio_content)
-        print('Audio content written to file "%s"', filename)
+    return marshal(response.audio_content)
