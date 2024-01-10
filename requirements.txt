@@ -2,6 +2,7 @@ websockets
 wave
 asyncio
 Flask
+flask-cors
 gunicorn
 firebase-admin
 google-cloud-storage

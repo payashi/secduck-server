@@ -1,7 +1,9 @@
 from google.cloud import texttospeech
 
+from .utils import marshal
 
-def get_audio(text, filename):
+
+def synthesize(text) -> str:
     """Synthesizes speech from the input string of text."""
 
     client = texttospeech.TextToSpeechClient()
@@ -12,11 +14,12 @@ def get_audio(text, filename):
     # Names of voices can be retrieved with client.list_voices().
     voice = texttospeech.VoiceSelectionParams(
         language_code="ja-JP",
-        name="ja-JP-Neural2-C",
+        name="ja-JP-Neural2-B",
     )
 
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+        pitch=0.80,
     )
 
     response = client.synthesize_speech(
@@ -24,6 +27,4 @@ def get_audio(text, filename):
     )
 
     # The response's audio_content is binary.
-    with open(filename, "wb") as out:
-        out.write(response.audio_content)
-        print('Audio content written to file "%s"', filename)
+    return marshal(response.audio_content)

@@ -35,7 +35,7 @@ def get_audio(filepath: str) -> bytes:
     return audio
 
 
-def synthesize_audio(*filepaths: str) -> bytes:
+def concatenate_audio(*filepaths: str) -> bytes:
     """Synthesize multiple audio files with same params"""
     outfile = BytesIO()
 
