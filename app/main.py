@@ -19,12 +19,14 @@ from google.api_core.exceptions import NotFound
 from cloudevents.http import from_http
 
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from werkzeug.exceptions import BadRequest
 
 from .utils import marshal, is_today
 from .storage import upload_audio, get_uri, concatenate_audio
 from .transcribe import transcribe
 from .synthesize import synthesize
+
 
 # Use the application default credentials.
 cred = credentials.ApplicationDefault()
@@ -39,6 +41,7 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
+CORS(app)
 
 
 @app.route("/", methods=["POST"])
@@ -52,13 +55,14 @@ def index():
     except BadRequest:
         return jsonify({"error": "Invalid JSON"}), 400
 
-    remark = {
-        "from": "user",
-        "user_id": user_id,
-        "duck_id": duck_id,
-        "created_at": datetime.now().timestamp(),
-    }
-    _, ref = fs_client.collection("remarks").add(remark)
+    _, ref = fs_client.collection("remarks").add(
+        {
+            "from": "user",
+            "user_id": user_id,
+            "duck_id": duck_id,
+            "created_at": datetime.now().timestamp(),
+        }
+    )
     logging.info("Added document remarks/%s", ref.id)
 
     upload_audio(f"remarks/{ref.id}.wav", audio)

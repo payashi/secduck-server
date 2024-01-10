@@ -14,11 +14,12 @@ def synthesize(text) -> str:
     # Names of voices can be retrieved with client.list_voices().
     voice = texttospeech.VoiceSelectionParams(
         language_code="ja-JP",
-        name="ja-JP-Neural2-C",
+        name="ja-JP-Neural2-B",
     )
 
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+        pitch=0.80,
     )
 
     response = client.synthesize_speech(
