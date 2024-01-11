@@ -1,9 +1,6 @@
 from google.cloud import texttospeech
 
-from .utils import marshal
-
-
-def synthesize(text) -> str:
+def synthesize(text) -> bytes:
     """Synthesizes speech from the input string of text."""
 
     client = texttospeech.TextToSpeechClient()
@@ -19,7 +16,8 @@ def synthesize(text) -> str:
 
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.LINEAR16,
-        pitch=0.80,
+        pitch=1.60,
+        speaking_rate=1.15,
     )
 
     response = client.synthesize_speech(
@@ -27,4 +25,4 @@ def synthesize(text) -> str:
     )
 
     # The response's audio_content is binary.
-    return marshal(response.audio_content)
+    return response.audio_content
