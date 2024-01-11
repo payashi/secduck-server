@@ -6,7 +6,6 @@ Entry point for Cloud Run Server. Can be run with
 
 import os
 import logging
-import uuid
 
 from datetime import datetime
 import re
@@ -22,10 +21,10 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.exceptions import BadRequest
 
-from .utils import marshal, is_today
-from .storage import upload_audio, get_uri, concatenate_audio
+from .utils import marshal, is_today, unmarshal
 from .transcribe import transcribe
 from .synthesize import synthesize
+from .storage import DuckStorage
 
 
 # Use the application default credentials.
@@ -33,6 +32,7 @@ cred = credentials.ApplicationDefault()
 
 firebase_admin.initialize_app(cred)
 fs_client = firestore.client()
+ds = DuckStorage()
 
 logging.basicConfig(
     format="%(asctime)s:%(message)s",
@@ -43,275 +43,131 @@ logging.basicConfig(
 app = Flask(__name__)
 CORS(app)
 
-
-@app.route("/", methods=["POST"])
-def index():
-    """Receive audio data from clients"""
+@app.route("/sync", methods=['POST'])
+def sync():
+    """Sync data with clients"""
     try:
         data = request.get_json()
         user_id = data["user_id"]
         duck_id = data["duck_id"]
-        audio = data["audio"]
+        prompt_ids = data["prompt_ids"]
     except BadRequest:
         return jsonify({"error": "Invalid JSON"}), 400
 
-    _, ref = fs_client.collection("remarks").add(
-        {
-            "from": "user",
-            "user_id": user_id,
-            "duck_id": duck_id,
-            "created_at": datetime.now().timestamp(),
-        }
-    )
-    logging.info("Added document remarks/%s", ref.id)
+    logging.info("Syncing audio for %s's duck(%s)", user_id, duck_id)
+    data = dict()
 
-    upload_audio(f"remarks/{ref.id}.wav", audio)
-
-    return f"Remark #{ref.id} was successfully uploaded"
-
-
-@app.route("/start_work", methods=["GET"])
-def start_work():
-    """Send audio data to start work"""
-    user_id = request.args.get("user_id")
-    duck_id = request.args.get("duck_id")
-
-    logging.info("Receive `start_work` request from %s", user_id)
-
-    user_ref = fs_client.document(f"users/{user_id}")
-    user_doc = user_ref.get()
-    if not user_doc.exists:
-        logging.error("No document for user %s", user_id)
-        return (f"No document for user {user_id}", 500)
-
-    data = user_doc.to_dict()
-
-    user_ref.update(
-        {"last_active": datetime.now().timestamp()},
-    )
-    try:
-        last_active = data["last_active"]
-        prompts = data["prompts"]
-        hints = data["hints"]
-    except KeyError:
-        logging.error("Document format for user %s is wrong: %s", user_id, str(data))
-        return (f"Document format for user {user_id} is wrong: {str(data)}", 500)
-
-    prompt_ids = {tag: list(prompt.keys())[0] for tag, prompt in list(prompts.items())}
-    prompt_texts = {
-        tag: list(prompt.values())[0] for tag, prompt in list(prompts.items())
-    }
-
-    if not is_today(last_active):
-        hint_id, hint_text = random.choice(list(hints.items()))
-
-        user_ref.update({"hint_for_today": hint_id})
-        # Today's first prompt
-        audio = concatenate_audio(
-            f"prompts/{prompt_ids['hello']}.wav",
-            f"prompts/{prompt_ids['before_hint']}.wav",
-            f"hints/{hint_id}.wav",
-            f"prompts/{prompt_ids['after_hint']}.wav",
-            f"prompts/{prompt_ids['start_work']}.wav",
-        )
-        text = "\n".join(
-            [
-                prompt_texts["hello"],
-                prompt_texts["before_hint"] + hint_text + prompt_texts["after_hint"],
-                prompt_texts["start_work"],
-            ]
-        )
-    else:
-        audio = concatenate_audio(f"prompts/{prompt_ids['start_work']}.wav")
-        text = "\n".join([prompt_texts["start_work"]])
-
-    prompt = {
-        "audio": marshal(audio),
-        "text": text,
-    }
-
-    fs_client.collection("remarks").add(
-        {
-            "from": "duck",
-            "user_id": user_id,
-            "duck_id": duck_id,
-            "text": text,
-            "created_at": datetime.now().timestamp(),
-        }
-    )
-    return jsonify(prompt)
-
-
-@app.route("/pause_work", methods=["GET"])
-def pause_work():
-    """Send audio data to pause work"""
-    user_id = request.args.get("user_id")
-    duck_id = request.args.get("duck_id")
-
-    logging.info("Receive `pause_work` request from %s", user_id)
-
-    doc = fs_client.document(f"users/{user_id}").get()
+    # Get user's configurations for each prompt
     doc = fs_client.document(f"users/{user_id}").get()
     if not doc.exists:
         logging.error("No document for user %s", user_id)
         return (f"No document for user {user_id}", 500)
 
-    data = doc.to_dict()
     try:
-        prompts = data["prompts"]
+        user_info = UserInfo(user_id, doc.to_dict())
     except KeyError:
-        logging.error("Document format for user %s is wrong: %s", user_id, str(data))
-        return (f"Document format for user {user_id} is wrong: {str(data)}", 500)
+        logging.error("Document format for user %s is wrong: %s", user_id, str(doc.to_dict()))
+        return ("Document format for user %s is wrong: %s", user_id, str(doc.to_dict()), 500)
 
-    prompt_ids = {tag: list(prompt.keys())[0] for tag, prompt in list(prompts.items())}
-    prompt_texts = {
-        tag: list(prompt.values())[0] for tag, prompt in list(prompts.items())
-    }
+    for prompt_id in prompt_ids:
+        prompt = user_info.prompts[prompt_id]
+        prompt = prompt.replace('[user]', user_info.name).replace('[hint]', user_info.hint)
 
-    audio = concatenate_audio(f"prompts/{prompt_ids['pause_work']}.wav")
-    text = prompt_texts["pause_work"]
+        audio = ds.get(f"prompts/{user_id}/{prompt_id}.wav")
+        if audio is None:
+            logging.info('Synthesize audio for %s', prompt_id)
+            audio = synthesize(prompt)
+            ds.upload(f"prompts/{user_id}/{prompt_id}.wav", audio)
+        else:
+            logging.info("Found audio for %s in storage", prompt_id)
 
-    prompt = {
-        "audio": marshal(audio),
-        "text": text,
-    }
-
-    fs_client.collection("remarks").add(
-        {
-            "from": "duck",
-            "user_id": user_id,
-            "duck_id": duck_id,
-            "text": text,
-            "created_at": datetime.now().timestamp(),
+        # data[prompt_id] = marshal(audio)
+        data[prompt_id] = {
+            'audio': marshal(audio),
+            'text': prompt,
         }
-    )
-    return jsonify(prompt)
 
+    return data
 
-@app.route("/start_review", methods=["GET"])
-def start_review():
-    """Send audio data to pause work"""
-    user_id = request.args.get("user_id")
-    duck_id = request.args.get("duck_id")
-
-    logging.info("Receive `start_review` request from %s", user_id)
-
-    user_ref = fs_client.document(f"users/{user_id}")
-    user_doc = user_ref.get()
-    if not user_doc.exists:
-        logging.error("No document for user %s", user_id)
-        return (f"No document for user {user_id}", 500)
-
-    data = user_doc.to_dict()
-    try:
-        prompts = data["prompts"]
-        hints = data["hints"]
-        hint_for_today = data["hint_for_today"]
-    except KeyError:
-        logging.error("Document format for user %s is wrong: %s", user_id, str(data))
-        return (f"Document format for user {user_id} is wrong: {str(data)}", 500)
-
-    prompt_ids = {tag: list(prompt.keys())[0] for tag, prompt in list(prompts.items())}
-    prompt_texts = {
-        tag: list(prompt.values())[0] for tag, prompt in list(prompts.items())
-    }
-
-    audio = concatenate_audio(
-        f"prompts/{prompt_ids['bye']}.wav",
-        f"prompts/{prompt_ids['before_review']}.wav",
-        f"hints/{hint_for_today}.wav",
-        f"prompts/{prompt_ids['after_review']}.wav",
-    )
-    # text = prompt_texts["pause_work"]
-    text = "\n".join(
-        [
-            prompt_texts["bye"],
-            f'{prompt_texts["before_review"]}'
-            f' "{hints[hint_for_today]}" '
-            f'{prompt_texts["after_review"]}',
-        ]
-    )
-
-    prompt = {
-        "audio": marshal(audio),
-        "text": text,
-    }
-
-    fs_client.collection("remarks").add(
-        {
-            "from": "duck",
-            "user_id": user_id,
-            "duck_id": duck_id,
-            "text": text,
-            "created_at": datetime.now().timestamp(),
-        }
-    )
-    return jsonify(prompt)
-
-
-@app.route("/users/hints", methods=["POST"])
-def create_hint():
-    """Create a hint"""
+@app.route("/log/prompt", methods=['POST'])
+def log_prompt():
+    '''Log a prompt to Firestore'''
     try:
         data = request.get_json()
         user_id = data["user_id"]
-        hint_text = data["hint_text"]
+        duck_id = data["duck_id"]
+        text = data["text"]
+        created_at = data["created_at"]
     except BadRequest:
         return jsonify({"error": "Invalid JSON"}), 400
 
-    ref = fs_client.document(f"users/{user_id}")
-    user_info = ref.get().to_dict()
-    hints = user_info["hints"]
-    hint_id = str(uuid.uuid4())
-    hints[hint_id] = hint_text
-    ref.update({"hints": hints})
+    logging.info("Logging a prompt for %s's duck(%s)", user_id, duck_id)
 
-    upload_audio(f"hints/{hint_id}.wav", synthesize(hint_text))
+    log_data = {
+        "duck_id": duck_id,
+        "text": text,
+        "created_at": created_at,
+    }
 
-    return f"Successfully created a new hint: {hint_id}"
+    _, ref = fs_client.collection(f"users/{user_id}/prompts").add(log_data)
 
+    logging.info("Added document users/%s/prompts/%s", user_id, ref.id)
 
-@app.route("/users/hints", methods=["DELETE"])
-def delete_hint():
-    """Create a hint"""
+    return jsonify({"message": "Success"})
+
+@app.route("/log/record", methods=['POST'])
+def log_record():
+    '''Log a record to Firestore'''
     try:
         data = request.get_json()
         user_id = data["user_id"]
-        hint_id = data["hint_id"]
+        duck_id = data["duck_id"]
+        audio = data["audio"]
+        created_at = data["created_at"]
     except BadRequest:
         return jsonify({"error": "Invalid JSON"}), 400
 
-    ref = fs_client.document(f"users/{user_id}")
-    user_info = ref.get().to_dict()
-    hints = user_info["hints"]
-    del hints[hint_id]
-    ref.update({"hints": hints})
+    logging.info("Logging a record for %s's duck(%s)", user_id, duck_id)
 
-    return f"Successfully deleted a hint: {hint_id}"
+    log_data = {
+        "duck_id": duck_id,
+        "text": "",
+        "created_at": created_at,
+    }
+
+    _, ref = fs_client.collection(f"users/{user_id}/records").add(log_data)
+    logging.info("Added document users/%s/records/%s", user_id, ref.id)
+
+    ds.upload(f"records/{user_id}/{ref.id}.wav", unmarshal(audio))
+
+    return jsonify({"message": "Success"})
+
 
 
 @app.route("/on_gcs_finalize", methods=["POST"])
 def gcs_handler():
     """Listen to GCS finalize event with Eventarc"""
     event = from_http(request.headers, request.data)
-    subject = event.get("subject")  # objects/audio/{remark_id}.wav
+    subject = event.get("subject")  # objects/records/{user_id}/{record_id}.wav
     logging.info("Detected change in Cloud Storage bucket: %s", subject)
 
-    result = re.match(r"^objects\/(remarks\/.*)\.wav$", subject)
-    if result is None or len(result.groups()) != 1:
-        return (f"GCS Blob ({subject}) doesn't seem correct", 500)
-    docpath = result.group(1)  #  'remarks/{remark_id}'
+    result = re.match(r"^objects\/records\/(.*)\/(.*)\.wav$", subject)
+    if result is None or len(result.groups()) != 2:
+        return (f"GCS Blob ({subject}) doesn't conform to the expected format", 200)
+
+    user_id, record_id = result.groups()
 
     # Transcribe audio
-    gcs_uri, url = get_uri(docpath + ".wav")
-    text = transcribe(gcs_uri)
+    blob = ds.bucket.blob(f'records/{user_id}/{record_id}.wav')
+    text = transcribe(f"gs://{ds.bucket.name}/{blob.name}")
 
     # Send results to Firestore
-    ref = fs_client.document(docpath)
+    ref = fs_client.document(f'users/{user_id}/records/{record_id}')
     try:
-        ref.update({"audio_url": url, "text": text})
+        ref.update({"audio_url": blob.public_url, "text": text})
     except NotFound:
-        logging.error("No document to update: %s", docpath)
+        logging.error("No document to update: %s", ref.path)
+        return (f"No document to update: {ref.path}", 500)
 
     return (f"Transcription for {subject} has been successfully completed", 200)
 
@@ -321,3 +177,28 @@ if __name__ == "__main__":
     # This is used when running locally. Gunicorn is used to run the
     # application on Cloud Run. See entrypoint in Dockerfile.
     app.run(host="localhost", port=int(os.environ.get("PORT", 8080)), debug=True)
+
+class UserInfo:
+    '''UserInfo'''
+    def __init__(self, user_id, json_data):
+        self.id = user_id
+        self.name = json_data['name']
+        self.last_active: float = json_data['last_active']
+        self.prompts: dict[str,str] = json_data['prompts'] # prompt_id: text
+        self.hints = json_data['hints'] # hint's uuid: text
+        self.hint_for_today = json_data['hint_for_today']
+
+        if not is_today(self.last_active):
+            self.hint_for_today = random.choice(list(self.hints.keys()))
+            fs_client.document(f"users/{user_id}").update({
+                    'last_active': datetime.now().timestamp(),
+                    'hint_for_today': self.hint_for_today
+            })
+
+    @property
+    def hint(self)->str:
+        '''Get hint for today'''
+        return self.hints[self.hint_for_today]
+
+    def __str__(self):
+        return f"UserInfo(id={self.id})"
