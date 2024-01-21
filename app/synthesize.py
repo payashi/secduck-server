@@ -16,7 +16,8 @@ def synthesize(text) -> bytes:
 
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.LINEAR16,
-        pitch=1.60,
+        # pitch=1.60,
+        pitch=20,
         speaking_rate=1.15,
     )
 
