@@ -87,6 +87,44 @@ def sync():
     return data
 
 
+@app.route("/sync_pomo", methods=["POST"])
+def sync_pomo():
+    """Sync data with clients"""
+    try:
+        data = request.get_json()
+        user_id = data["user_id"]
+        duck_id = data["duck_id"]
+    except BadRequest:
+        return jsonify({"error": "Invalid JSON"}), 400
+
+    logging.info("Syncing pomo duration for %s's duck(%s)", user_id, duck_id)
+    data = dict()
+
+    # Get user's configurations for each prompt
+    doc = fs_client.document(f"users/{user_id}").get()
+    if not doc.exists:
+        logging.error("No document for user %s", user_id)
+        return (f"No document for user {user_id}", 500)
+
+    try:
+        user_info = UserInfo(user_id, doc.to_dict())
+    except KeyError:
+        logging.error(
+            "Document format for user %s is wrong: %s", user_id, str(doc.to_dict())
+        )
+        return (
+            "Document format for user %s is wrong: %s",
+            user_id,
+            str(doc.to_dict()),
+            500,
+        )
+
+    return {
+        "focus_time": user_info.focus_time,
+        "break_time": user_info.break_time,
+    }
+
+
 @app.route("/log/prompt", methods=["POST"])
 def log_prompt():
     """Log a prompt to Firestore"""
@@ -102,9 +140,9 @@ def log_prompt():
     logging.info("Logging a prompt for %s's duck(%s)", user_id, duck_id)
 
     log_data = {
-        "type": "prompts",
+        "author": "duck",
         "duck_id": duck_id,
-        "text": text,
+        "content": text,
         "created_at": created_at,
     }
 
@@ -130,9 +168,8 @@ def log_record():
     logging.info("Logging a record for %s's duck(%s)", user_id, duck_id)
 
     log_data = {
-        "type": "record",
+        "author": "user",
         "duck_id": duck_id,
-        "text": "",
         "created_at": created_at,
     }
 
@@ -164,7 +201,13 @@ def gcs_handler():
     # Send results to Firestore
     ref = fs_client.document(f"users/{user_id}/logs/{record_id}")
     try:
-        ref.update({"audio_url": blob.public_url, "text": text})
+        data = {
+            "audio_url": blob.public_url,
+            "content": text,
+        }
+        if "レビュー" in text:
+            data["prompt"] = text
+        ref.update(data)
     except NotFound:
         logging.error("No document to update: %s", ref.path)
         return (f"No document to update: {ref.path}", 500)
@@ -189,6 +232,8 @@ class UserInfo:
         self.prompts: dict[str, str] = json_data.get("prompts")  # prompt_id: text
         self.hints = json_data.get("hints")  # hint's uuid: text
         self.hint_for_today = json_data.get("hint_for_today")
+        self.break_time = json_data.get("break_time")
+        self.focus_time = json_data.get("focus_time")
 
         if not self.hint_for_today or not is_today(self.last_active):
             self.hint_for_today = random.choice(list(self.hints.keys()))
